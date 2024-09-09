@@ -12,6 +12,7 @@
 @interface I420Converter()
 
 @property (nonatomic, assign) vImage_YpCbCrToARGB *conversionInfo;
+@property (nonatomic, assign) CVPixelBufferPoolRef pixelBufferPool;
 
 @end
 
@@ -24,8 +25,6 @@
         return kvImageNoError;
     }
     
-    // Full range
-    //vImage_YpCbCrPixelRange pixelRange = { 0, 128, 255, 255, 255, 1, 255, 0 };
     vImage_YpCbCrPixelRange pixelRange = { 16, 128, 235, 240, 255, 0, 255, 0 };
     vImage_YpCbCrToARGB *outInfo = malloc(sizeof(vImage_YpCbCrToARGB));
     vImageYpCbCrType inType = kvImage420Yp8_Cb8_Cr8;
@@ -49,36 +48,48 @@
         free(_conversionInfo);
         _conversionInfo = NULL;
     }
+    if (_pixelBufferPool != NULL) {
+        CVPixelBufferPoolRelease(_pixelBufferPool);
+        _pixelBufferPool = NULL;
+    }
 }
 
-- (CVPixelBufferRef)convertI420ToPixelBuffer:(RTCI420Buffer *)buffer
-{
+- (void)createPixelBufferPoolWithWidth:(size_t)width height:(size_t)height {
+    if (_pixelBufferPool != NULL) {
+        CVPixelBufferPoolRelease(_pixelBufferPool);
+    }
+    
+    NSDictionary *pixelBufferAttributes = @{
+        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferWidthKey: @(width),
+        (id)kCVPixelBufferHeightKey: @(height),
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
+    
+    CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, (__bridge CFDictionaryRef)pixelBufferAttributes, &_pixelBufferPool);
+}
+
+- (CVPixelBufferRef)convertI420ToPixelBuffer:(RTCI420Buffer *)buffer {
     if (_conversionInfo == nil) {
         NSLog(@"%@: not prepared", NSStringFromSelector(_cmd));
         return NULL;
     }
     
+    if (_pixelBufferPool == NULL) {
+        [self createPixelBufferPoolWithWidth:buffer.width height:buffer.height];
+    }
+    
     CVPixelBufferRef pixelBuffer = NULL;
-    NSDictionary *pixelBufferAttributes = [NSDictionary dictionaryWithObjectsAndKeys:
-                                           [NSDictionary dictionary],
-                                           (id)kCVPixelBufferIOSurfacePropertiesKey,
-                                           nil
-    ];
-
-    CVReturn status = CVPixelBufferCreate(kCFAllocatorDefault,
-                                          buffer.width,
-                                          buffer.height,
-                                          kCVPixelFormatType_32BGRA,
-                                          (__bridge CFDictionaryRef)pixelBufferAttributes,
-                                          &pixelBuffer);
+    CVReturn status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, _pixelBufferPool, &pixelBuffer);
     
     if (status != kCVReturnSuccess) {
+        NSLog(@"Error creating pixel buffer from pool: %d", status);
         return NULL;
     }
     
     vImage_Error err = [self convertFrameVImageYUV:buffer toBuffer:pixelBuffer];
     
-    if(err != kvImageNoError) {
+    if (err != kvImageNoError) {
         NSLog(@"%@: error during conversion: %ld", NSStringFromSelector(_cmd), err);
         CVPixelBufferRelease(pixelBuffer);
         return NULL;
@@ -128,6 +139,10 @@
     CVPixelBufferUnlockBaseAddress(pixelBufferRef, 0);
     
     return convertError;
+}
+
+- (void)dealloc {
+    [self unprepareForAccelerateConversion];
 }
 
 @end
